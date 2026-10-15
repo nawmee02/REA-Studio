@@ -1,0 +1,6 @@
+{
+  "name": "REA Studio",
+  "description": "Reverse engineer native binaries, JavaScript, Electron, and web applications with REA workflows.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
