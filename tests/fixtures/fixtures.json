@@ -1,0 +1,26 @@
+{
+  "fixtures": [
+    {
+      "name": "react_spa_golden",
+      "target_type": "web_url",
+      "html": "<!doctype html><html><head><title>Linear</title></head><body><div id=\"root\" data-reactroot=\"\"><main>Dashboard</main></div><script src=\"/static/js/main.js\"></script><script>const API_CONFIG = { rest_url: \"/api/v2/issues\", ws: \"wss://stream.linear.app\" };</script></body></html>",
+      "expected": {
+        "frameworks": ["React"],
+        "has_root": true,
+        "endpoints_discovered": ["/api/v2/issues"],
+        "script_count": 1
+      }
+    },
+    {
+      "name": "lit_web_components_golden",
+      "target_type": "web_url",
+      "html": "<!doctype html><html><head><title>App</title></head><body><my-search-widget data-mode=\"active\"></my-search-widget><script type=\"module\" src=\"/widget.js\"></script><script>/* LitElement attachment */ class SearchEl extends LitElement { attachShadow() {} }</script></body></html>",
+      "expected": {
+        "frameworks": ["Lit / Shadow DOM", "Web Components"],
+        "custom_elements": ["my-search-widget"],
+        "has_root": false,
+        "script_count": 1
+      }
+    }
+  ]
+}
