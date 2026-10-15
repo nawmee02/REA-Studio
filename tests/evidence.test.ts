@@ -20,6 +20,7 @@ describe('Evidence & Finding Truth Model', () => {
     const evidence: EvidenceRecord[] = [
       {
         evidence_id: 'ev_001',
+        schema_version: '1.0.0',
         type: 'observation',
         phase: 'header_inspection',
         source: {
@@ -28,6 +29,7 @@ describe('Evidence & Finding Truth Model', () => {
           sha256: sha256('headers')
         },
         content: { server: 'Cloudflare' },
+        canonical_digest: sha256('headers'),
         authority: 'direct',
         timestamp: new Date().toISOString(),
         tool: 'rea-header-inspector',
@@ -75,5 +77,32 @@ describe('Evidence & Finding Truth Model', () => {
     assert.strictEqual(inference.classification, 'inference');
     assert.ok(inference.confidence >= 0 && inference.confidence <= 1.0);
     assert.ok(inference.supports && inference.supports.length > 0);
+  });
+
+  test('derived evidence records declare parent evidence IDs and transformation method', () => {
+    const derivedEvidence: EvidenceRecord = {
+      evidence_id: 'ev_derived_tech',
+      schema_version: '1.0.0',
+      type: 'derivation',
+      phase: 'technology_detection',
+      source: {
+        kind: 'script_ast',
+        location: 'https://example.com',
+        sha256: sha256('tech')
+      },
+      content: { framework: 'React' },
+      canonical_digest: sha256('tech'),
+      authority: 'derived',
+      timestamp: new Date().toISOString(),
+      tool: 'rea-tech-fingerprint@6.5.0',
+      limitations: ['Derived from AST patterns'],
+      parent_evidence_ids: ['ev_dom_01', 'ev_script_01']
+    };
+
+    assert.strictEqual(derivedEvidence.schema_version, '1.0.0');
+    assert.strictEqual(derivedEvidence.type, 'derivation');
+    assert.strictEqual(derivedEvidence.authority, 'derived');
+    assert.ok(derivedEvidence.parent_evidence_ids && derivedEvidence.parent_evidence_ids.length === 2);
+    assert.ok(derivedEvidence.parent_evidence_ids.includes('ev_dom_01'));
   });
 });

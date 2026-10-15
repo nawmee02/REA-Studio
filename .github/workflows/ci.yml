@@ -1,0 +1,52 @@
+name: REA Studio Verification Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  verify:
+    name: Verify & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Dependencies (Frozen Lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Repository Hygiene Check (No Target-Specific Remnants)
+        if: runner.os == 'Linux'
+        run: |
+          echo "Scanning tracked files for target-specific remnants..."
+          if git grep -niE 'aurome|aurome\.bd|inspect_advisor|advisor-api'; then
+            echo "FAILED: Target-specific remnants discovered in repository."
+            exit 1
+          fi
+          echo "Hygiene check passed: 0 forbidden remnants found."
+
+      - name: TypeScript Static Type Checking
+        run: bun run lint
+
+      - name: Automated Unit & Integration Test Suites
+        run: bun run test
+
+      - name: Production Vite Build
+        run: bun run build

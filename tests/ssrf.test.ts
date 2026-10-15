@@ -76,4 +76,16 @@ describe('SSRF & IP Boundary Enforcement', () => {
     const u2 = validateUrlStructure('http://example.com/test?query=1');
     assert.strictEqual(u2.hostname, 'example.com');
   });
+
+  test('rejects target when initial origin violates expectedOrigin', async () => {
+    const { safeFetch } = await import('../src/server/networkGuard');
+    await assert.rejects(
+      async () => {
+        await safeFetch('https://another-domain.com/path', {
+          expectedOrigin: 'https://example.com:443'
+        });
+      },
+      /Scope violation: Target origin "https:\/\/another-domain\.com:443" does not match authorized origin "https:\/\/example\.com:443"/
+    );
+  });
 });

@@ -47,7 +47,7 @@ export default function App() {
                   </span>
                   <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                    Investigation Engine Ready
+                    Web Reconnaissance Active
                   </span>
                 </div>
                 <p className="text-xs text-slate-400 hidden sm:block">

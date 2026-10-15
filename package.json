@@ -1,7 +1,8 @@
 {
-  "name": "react-example",
+  "name": "rea-studio",
+  "description": "REA Studio — Reproducible Reverse-Engineering Platform",
+  "version": "1.0.0",
   "private": true,
-  "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",

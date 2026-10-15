@@ -15,6 +15,17 @@ export interface SafeFetchOptions {
   timeoutMs?: number;
   maxBytes?: number;
   maxRedirects?: number;
+  expectedOrigin?: string; // If supplied, enforces strict origin matching across initial URL and all redirect hops
+}
+
+/**
+ * Returns the normalized origin string: scheme://hostname:effectivePort
+ */
+export function getNormalizedOrigin(rawUrl: string | URL): string {
+  const parsed = typeof rawUrl === 'string' ? new URL(rawUrl) : rawUrl;
+  const isHttps = parsed.protocol === 'https:';
+  const effectivePort = parsed.port || (isHttps ? '443' : '80');
+  return `${parsed.protocol}//${parsed.hostname.toLowerCase()}:${effectivePort}`;
 }
 
 export interface SafeFetchResponse {
@@ -218,14 +229,28 @@ export async function safeFetch(targetUrl: string, options: SafeFetchOptions = {
     body,
     timeoutMs = 10000,
     maxBytes = 5 * 1024 * 1024, // 5 MB
-    maxRedirects = 5
+    maxRedirects = 5,
+    expectedOrigin
   } = options;
 
   let currentUrl = targetUrl;
   let redirectsFollowed = 0;
 
+  if (expectedOrigin) {
+    const initialOrigin = getNormalizedOrigin(currentUrl);
+    if (initialOrigin !== expectedOrigin) {
+      throw new Error(`Scope violation: Target origin "${initialOrigin}" does not match authorized origin "${expectedOrigin}".`);
+    }
+  }
+
   while (redirectsFollowed <= maxRedirects) {
     const parsed = validateUrlStructure(currentUrl);
+    if (expectedOrigin) {
+      const hopOrigin = getNormalizedOrigin(parsed);
+      if (hopOrigin !== expectedOrigin) {
+        throw new Error(`Cross-origin redirect violation: Redirected to origin "${hopOrigin}" which differs from authorized origin "${expectedOrigin}".`);
+      }
+    }
     const resolvedIp = await resolveSafeIp(parsed.hostname);
 
     const isHttps = parsed.protocol === 'https:';

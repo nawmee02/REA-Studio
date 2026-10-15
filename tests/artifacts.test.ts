@@ -1,56 +1,113 @@
-import { test, describe } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert';
-import path from 'path';
+import http from 'http';
+import { createInvestigationApp } from '../src/server/app';
 
-describe('Artifact Lab & Static Code Deconstruction', () => {
-  test('rejects path traversal in filename', () => {
-    const maliciousNames = [
+describe('Artifact Lab API & Implementation Tests', () => {
+  let server: http.Server;
+  let baseUrl: string;
+
+  before(async () => {
+    const app = createInvestigationApp();
+    server = http.createServer(app);
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address() as any;
+        baseUrl = `http://127.0.0.1:${addr.port}`;
+        resolve();
+      });
+    });
+  });
+
+  after(async () => {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  });
+
+  test('POST /api/analyze-artifact rejects path traversal in filenames via API', async () => {
+    const maliciousFilenames = [
       '../../etc/passwd',
       '..\\..\\windows\\system32',
-      '/var/run/secrets',
+      '/var/run/secrets.js',
       'foo/../../bar.js'
     ];
 
-    for (const name of maliciousNames) {
-      const isTraversal = name.includes('..') || name.startsWith('/') || name.includes('\\');
-      assert.strictEqual(isTraversal, true, `Should detect path traversal in "${name}"`);
+    for (const filename of maliciousFilenames) {
+      const res = await fetch(`${baseUrl}/api/analyze-artifact`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code: 'console.log("safe code");',
+          filename,
+          type: 'javascript'
+        })
+      });
+
+      assert.strictEqual(res.status, 400, `API should return HTTP 400 for traversal path "${filename}"`);
+      const body = await res.json() as any;
+      assert.ok(
+        body.error && body.error.includes('Path traversal characters detected'),
+        `Error response should state traversal was detected, got: ${JSON.stringify(body)}`
+      );
     }
   });
 
-  test('extracts dependencies and export identifiers from synthetic JS fixture', () => {
-    const code = `
-      import React, { useState } from 'react';
-      import { motion } from 'framer-motion';
-      const lodash = require('lodash');
+  test('POST /api/analyze-artifact rejects oversized payloads', async () => {
+    // 11MB payload
+    const oversized = 'x'.repeat(11 * 1024 * 1024);
+    const res = await fetch(`${baseUrl}/api/analyze-artifact`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code: oversized,
+        filename: 'bundle.js',
+        type: 'javascript'
+      })
+    });
 
-      export const DEFAULT_THEME = 'dark';
-      export function calculateMetric(a, b) {
-        return a + b;
+    // Express json parser limit 10MB will return 413, or analyzer returns 400
+    assert.ok(res.status === 400 || res.status === 413, `Expected 400 or 413 for oversized code, got: ${res.status}`);
+  });
+
+  test('POST /api/analyze-artifact parses dependencies, exports, and endpoints via API', async () => {
+    const code = `
+      import React from 'react';
+      import { motion } from 'framer-motion';
+      const utils = require('./utils');
+
+      export const CONFIG = { api: '/api/v2/telemetry' };
+      export function initEngine() {
+        return fetch('/api/v2/handshake');
       }
-      export default class EngineController {}
+      export default class CoreController {}
     `;
 
-    // Extract imports
-    const importRegex = /(?:import\s+(?:[\w*\s{},]*\s+from\s+)?['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))/g;
-    const dependencies = new Set<string>();
-    let m;
-    while ((m = importRegex.exec(code)) !== null) {
-      dependencies.add(m[1] || m[2]);
-    }
+    const res = await fetch(`${baseUrl}/api/analyze-artifact`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code,
+        filename: 'app.bundle.js',
+        type: 'javascript'
+      })
+    });
 
-    assert.ok(dependencies.has('react'));
-    assert.ok(dependencies.has('framer-motion'));
-    assert.ok(dependencies.has('lodash'));
+    assert.strictEqual(res.status, 200);
+    const body = await res.json() as any;
 
-    // Extract exports
-    const exportRegex = /export\s+(?:default\s+)?(?:class|function|const|let|var)\s+([a-zA-Z0-9_$]+)/g;
-    const exportsList = new Set<string>();
-    while ((m = exportRegex.exec(code)) !== null) {
-      exportsList.add(m[1]);
-    }
+    assert.strictEqual(body.artifact.filename, 'app.bundle.js');
+    assert.strictEqual(body.artifact.sha256.length, 64);
 
-    assert.ok(exportsList.has('DEFAULT_THEME'));
-    assert.ok(exportsList.has('calculateMetric'));
-    assert.ok(exportsList.has('EngineController'));
+    assert.ok(body.analysis.dependencies.includes('react'));
+    assert.ok(body.analysis.dependencies.includes('framer-motion'));
+    assert.ok(body.analysis.dependencies.includes('./utils'));
+
+    assert.ok(body.analysis.exports.includes('CONFIG'));
+    assert.ok(body.analysis.exports.includes('initEngine'));
+    assert.ok(body.analysis.exports.includes('CoreController'));
+
+    assert.ok(body.analysis.endpoints.includes('/api/v2/telemetry'));
+    assert.ok(body.analysis.endpoints.includes('/api/v2/handshake'));
   });
 });

@@ -218,26 +218,35 @@ ${session.evidence.map(e => `- **${e.evidence_id}** [${e.type} / ${e.authority}]
         <div className="mt-5 space-y-4">
           {/* Target Type Selector */}
           <div>
-            <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 block mb-2">
-              Target Kind
-            </label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 block">
+                Target Kind
+              </label>
+              <span className="text-[11px] text-slate-500">
+                Phase 3: Web URL supported &bull; Standalone JS/TS code supported via Artifact Lab
+              </span>
+            </div>
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
               {[
-                { type: 'web_url', label: 'Web URL' },
-                { type: 'local_artifact', label: 'Local Artifact' },
-                { type: 'browser_target', label: 'Browser Target' },
-                { type: 'binary', label: 'Binary (ELF/PE)' },
-                { type: 'archive', label: 'Package / ASAR' }
+                { type: 'web_url', label: 'Web URL', status: 'supported' },
+                { type: 'local_artifact', label: 'Local Artifact (Artifact Lab)', status: 'disabled' },
+                { type: 'browser_target', label: 'Browser (Planned)', status: 'disabled' },
+                { type: 'binary', label: 'Binary (Planned)', status: 'disabled' },
+                { type: 'archive', label: 'ASAR / Archive (Planned)', status: 'disabled' }
               ].map(opt => (
                 <button
                   key={opt.type}
                   type="button"
-                  onClick={() => setTargetType(opt.type as TargetType)}
+                  disabled={opt.status !== 'supported'}
+                  onClick={() => opt.status === 'supported' && setTargetType(opt.type as TargetType)}
                   className={`px-3 py-2 rounded-lg text-xs font-medium border text-center transition-all ${
                     targetType === opt.type
                       ? 'bg-indigo-600 border-indigo-500 text-white shadow-sm'
-                      : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                      : opt.status !== 'supported'
+                        ? 'bg-slate-950/30 border-slate-900 text-slate-600 cursor-not-allowed opacity-60'
+                        : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
                   }`}
+                  title={opt.status !== 'supported' ? 'This target type is not yet enabled for the full workspace pipeline in Phase 3.' : undefined}
                 >
                   {opt.label}
                 </button>
@@ -254,7 +263,7 @@ ${session.evidence.map(e => `- **${e.evidence_id}** [${e.type} / ${e.authority}]
               type="text"
               value={identifier}
               onChange={(e) => setIdentifier(e.target.value)}
-              placeholder={targetType === 'web_url' ? 'https://example.com' : './path/to/artifact.asar'}
+              placeholder="https://example.com"
               className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-500 font-mono focus:outline-none focus:border-indigo-500 transition-colors shadow-inner"
             />
           </div>
@@ -299,24 +308,26 @@ ${session.evidence.map(e => `- **${e.evidence_id}** [${e.type} / ${e.authority}]
                 <span>Network &amp; Edge Inspection</span>
               </label>
 
-              <label className="flex items-center gap-2 cursor-pointer">
+              <label className="flex items-center gap-2 text-slate-600 cursor-not-allowed" title="Runtime Observation is planned for a future phase and disabled in Phase 3">
                 <input
                   type="checkbox"
-                  checked={evidenceSources.runtime_observation}
-                  onChange={(e) => setEvidenceSources({ ...evidenceSources, runtime_observation: e.target.checked })}
-                  className="rounded border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                  disabled
+                  checked={false}
+                  className="rounded border-slate-800 text-slate-600 cursor-not-allowed opacity-40"
                 />
-                <span>Runtime Observation</span>
+                <span className="line-through decoration-slate-700">Runtime Observation</span>
+                <span className="text-[10px] px-1 py-0.2 rounded bg-slate-800 text-slate-400">Planned</span>
               </label>
 
-              <label className="flex items-center gap-2 cursor-pointer">
+              <label className="flex items-center gap-2 text-slate-600 cursor-not-allowed" title="Version Comparison is planned for a future phase and disabled in Phase 3">
                 <input
                   type="checkbox"
-                  checked={evidenceSources.version_comparison}
-                  onChange={(e) => setEvidenceSources({ ...evidenceSources, version_comparison: e.target.checked })}
-                  className="rounded border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                  disabled
+                  checked={false}
+                  className="rounded border-slate-800 text-slate-600 cursor-not-allowed opacity-40"
                 />
-                <span>Version Comparison / Diff</span>
+                <span className="line-through decoration-slate-700">Version Comparison / Diff</span>
+                <span className="text-[10px] px-1 py-0.2 rounded bg-slate-800 text-slate-400">Planned</span>
               </label>
             </div>
           </div>
@@ -433,7 +444,7 @@ ${session.evidence.map(e => `- **${e.evidence_id}** [${e.type} / ${e.authority}]
             <div className="bg-slate-900 border border-slate-800 p-3 rounded-lg">
               <span className="text-slate-400 text-[10px] uppercase tracking-wider block font-semibold">Evidence Nodes</span>
               <span className="text-white text-lg font-bold mt-0.5 block font-mono">{activeSession.evidence.length}</span>
-              <span className="text-[10px] text-emerald-400">100% Cryptographic Digest</span>
+              <span className="text-[10px] text-emerald-400">Hash-Verified Ledger</span>
             </div>
 
             <div className="bg-slate-900 border border-slate-800 p-3 rounded-lg">
@@ -451,7 +462,7 @@ ${session.evidence.map(e => `- **${e.evidence_id}** [${e.type} / ${e.authority}]
             <div className="bg-slate-900 border border-slate-800 p-3 rounded-lg">
               <span className="text-slate-400 text-[10px] uppercase tracking-wider block font-semibold">Confirmed Tech</span>
               <span className="text-white text-lg font-bold mt-0.5 block font-mono">{activeSession.coverage.technologies_confirmed}</span>
-              <span className="text-[10px] text-purple-400">Signed Signatures</span>
+              <span className="text-[10px] text-purple-400">Static Fingerprints</span>
             </div>
 
             <div className="bg-slate-900 border border-slate-800 p-3 rounded-lg">
