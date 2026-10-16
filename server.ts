@@ -26,16 +26,13 @@ async function start() {
     });
   }
 
-  const port = process.env.PORT || 3000;
+  const port = 3000;
   app.listen(port, () => {
     console.log(`REA Studio server running at http://localhost:${port}`);
   });
 }
 
-// Only start the server if directly executed as the main module
-if (process.argv[1] && process.argv[1].endsWith('server.ts')) {
-  start().catch(err => {
-    console.error('Fatal server startup error:', err);
-    process.exit(1);
-  });
-}
+start().catch(err => {
+  console.error('Fatal server startup error:', err);
+  process.exit(1);
+});

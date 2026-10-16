@@ -1,129 +1,131 @@
 # REA Studio (Reverse Engineer Anything Studio)
 
-REA Studio is a reproducible reverse-engineering platform built on the principles of evidence provenance, cryptographic reproducibility, and strict boundary isolation.
+REA Studio is a reproducible reverse-engineering platform built on the principles of evidence provenance, cryptographic reproducibility, strict boundary isolation, and secure multi-tenant cloud persistence.
 
 Rather than acting as an opaque guessing tool, REA Studio records verifiable evidence records into a tamper-evident ledger, separates factual observations from derived inferences, and explicitly documents residual unknowns.
 
 ---
 
-## Architecture Overview
+## Architecture Overview (Phase 4: Firebase Auth & Cloud Firestore)
 
 ```text
                          ┌──────────────────────┐
                          │      REA Studio      │
-                         │       Web UI         │
+                         │   Web UI & Client    │
+                         └──────────┬───────────┘
+                                    │ (Firebase Auth ID Token)
+                                    ▼
+                         ┌──────────────────────┐
+                         │ Express API Gateway  │
+                         │ (requireAuth Guard)  │
                          └──────────┬───────────┘
                                     │
                     ┌───────────────┼───────────────┐
                     │               │               │
-              Web Reconnaissance   Artifact Lab   Verification Engine
+               Reconnaissance  Artifact Lab   Verification Engine
                     │               │               │
                     └───────────────┼───────────────┘
                                     │
-                         Reconnaissance Pipeline
-                    ┌───────────────┼───────────────┐
-                    │               │               │
-               Anti-SSRF Guard  AST & DOM Extractor   Tech Fingerprint
-                    │               │               │
-                    └───────────────┼───────────────┘
+                        Evidence & Findings Ledger
                                     │
-                       Evidence & Findings Ledger
+                                    ▼
+                   ┌─────────────────────────────────┐
+                   │  Investigation Repository Layer  │
+                   └────────────────┬────────────────┘
                                     │
-                       ┌────────────┴────────────┐
-                       │                         │
-                 SQLite Storage           Export Bundle (.json)
-                 (rea_studio.db)                 │
-                       │                         │
-                       └────────────┬────────────┘
-                                    │
-                        Offline Replay Engine
+                    ┌───────────────┴───────────────┐
+                    │                               │
+                    ▼                               ▼
+       Cloud Firestore (Production)      SQLite Adapter (Local Dev/Test)
+       - investigations/{id}             - data/rea_studio.db (git-ignored)
+       - evidence subcollections         - Deterministic isolated tests
+       - findings subcollections
+       - graph subcollections
 ```
 
 ---
 
-## Target Capability Registry (Phase 3 Status)
+## Authentication & Authorization Model
 
-| Target Type | Status | Acquisition Method | Available Analysis Stages | Limitations |
-| :--- | :--- | :--- | :--- | :--- |
-| **`web_url`** | **Supported** | Pinned DNS `safeFetch` with Anti-SSRF | 10 stages (Target, Headers, DOM, Scripts, Tech, Endpoints, Agent, Graph, Sealing) | Static edge reconnaissance; authenticated sessions require interactive state |
-| **`local_artifact`** | **Stand-alone in Lab** | Local buffer parser | Dependency extraction, export symbol listing, candidate path discovery | Workspace pipeline disabled in Phase 3; use Artifact Lab tab |
-| **`browser_target`** | **Planned (Future)** | Chrome DevTools Protocol (CDP) | DOM snapshots, HAR capture | Browser automation disabled in Phase 3 |
-| **`binary`** | **Planned (Future)** | Header parser & symbol extractor | PE/ELF headers, strings extraction | Native decompilation disabled in Phase 3 |
-| **`archive`** | **Planned (Future)** | Archive virtual unpacker | ASAR/ZIP indexing | Dynamic unpacking disabled in Phase 3 |
-
-*Unsupported target types are rejected with HTTP 400 Bad Request by the investigation API.*
-
----
-
-## Security Model & Boundary Enforcement
-
-1. **Anti-SSRF and IP Restrictions (`src/server/networkGuard.ts`)**:
-   - Blocks IPv4 loopback (`127.0.0.0/8`, `0.0.0.0/8`).
-   - Blocks RFC 1918 private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`).
-   - Blocks Cloud Metadata endpoints (`169.254.169.254`, `metadata.google.internal`).
-   - Blocks Carrier-Grade NAT (`100.64.0.0/10`) and documentation subnets (`198.51.100.0/24`).
-   - Blocks IPv6 loopback (`::1`), ULA (`fc00::/7`), Link-Local (`fe80::/10`), and IPv4-mapped IPv6 bypass attempts (`::ffff:127.0.0.1`).
-   - **Connection Pinning**: Validates resolved IP prior to connection and connects directly to the validated IP to eliminate DNS rebinding TOCTOU vulnerabilities.
-   - **Redirect Validation**: Re-validates IP and protocol on each redirect hop (up to 5 redirects).
-
-2. **Origin-Bound Endpoint Verification (`POST /api/verify-endpoint`)**:
-   - **Normalized Origin Equality**: Compares scheme, hostname, and effective port (`getNormalizedOrigin`).
-   - **Discovered Scope Binding**: Rejects probes to endpoints not previously discovered in the investigation session.
-   - **Safe Methods Only**: Only idempotent safe methods (`GET`, `HEAD`, `OPTIONS`) are permitted. State-changing methods (`POST`, `PUT`, `DELETE`, `PATCH`) return HTTP 405 Method Not Allowed.
-   - **Redirect Scope Enforcement**: Prohibits cross-origin redirects during verification.
+1. **Client Identity**: Operators sign in using Firebase Authentication (Email & Password). Public self-registration is disabled in the UI; accounts are provisioned by project administrators.
+2. **Server-Side Token Verification (`src/server/authMiddleware.ts`)**:
+   - Every protected API route enforces `Authorization: Bearer <Firebase ID Token>`.
+   - Verified cryptographically via the `firebase-admin` Auth SDK with revocation checks (`checkRevoked: true`).
+   - Rejects missing, expired, revoked, or forged tokens with HTTP 401.
+3. **Allowlist Enforcement (`FIREBASE_ADMIN_UIDS`)**:
+   - When `FIREBASE_ADMIN_UIDS` is configured, only UIDs listed in the server-side environment variable are authorized to operate the Studio (unlisted UIDs return HTTP 403 Forbidden).
+   - Client-supplied identity fields (`uid`, `role`, `isAdmin`) are never trusted.
+4. **Multi-Tenant Ownership & Isolation**:
+   - Every investigation document and subcollection record is tagged with the verified `owner_uid`.
+   - Queries (`list`, `getById`, `delete`, `export`, and `verify-endpoint`) strictly enforce requester UID isolation. Users cannot view, modify, or export investigations owned by other operators.
+   - Bundle import overrides client metadata with the verified token UID.
 
 ---
 
-## Durable Storage & SQLite Persistence
+## Storage Backends: Cloud Firestore vs. SQLite
 
-- Backed by native `node:sqlite` in Node 22 (`data/rea_studio.db`).
-- Schema migrations track versioned table definitions (`schema_migrations`, `investigations`, `evidence_records`, `findings`).
-- Atomic transactions (`BEGIN` ... `COMMIT`) wrap session saves and updates.
-- Collision-resistant unique IDs generated via `crypto.randomUUID()`.
-- Failed and partially completed investigations are preserved alongside failure evidence.
-- Full recovery across process restarts verified by automated test suites.
+- **Production Mode (`FIREBASE_STORAGE_BACKEND=firestore`)**:
+  - Normalized document model avoiding document size limits:
+    - Root: `investigations/{investigationId}` (manifest, coverage, lifecycle, target, ownerUid)
+    - Subcollection: `investigations/{investigationId}/evidence/{evidenceId}`
+    - Subcollection: `investigations/{investigationId}/findings/{findingId}`
+    - Subcollection: `investigations/{investigationId}/graph/main`
+  - Atomic batch writes via `db.batch().commit()`.
+  - **Fail-Fast Safety**: The application will never silently fall back to SQLite when Firestore is configured. If Firestore initialization fails, the server fails fast with a clear error.
+- **Local Dev & Test Mode (`FIREBASE_STORAGE_BACKEND=sqlite`)**:
+  - Uses `node:sqlite` in-process database with migration tracking.
+  - Automatically enabled for deterministic offline testing suites.
+  - SQLite files (`*.db`, `*.sqlite`, `data/`) are ignored by version control.
 
 ---
 
-## Versioned Evidence Schema & Replay Contract
+## Firestore Security Rules (`firestore.rules`)
 
-Every evidence record is sealed under version `1.0.0`:
+REA Studio uses a **server-authoritative security model**. All persistence, queries, mutations, and active verification probes execute exclusively through the authenticated Express API and Firebase Admin SDK.
 
-```typescript
-export interface EvidenceRecord {
-  evidence_id: string;
-  schema_version: '1.0.0';
-  type: 'observation' | 'derivation' | 'runtime_capture';
-  phase: string;
-  source: {
-    kind: 'http_response' | 'http_headers' | 'html_dom' | 'script_ast' | 'config_literal' | 'network_probe';
-    location: string;
-    sha256: string;
-    bytes?: number;
-  };
-  content: Record<string, any>;
-  canonical_digest: string;
-  authority: 'direct' | 'derived' | 'heuristic';
-  timestamp: string;
-  tool: string;
-  limitations: string[];
-  parent_evidence_ids?: string[];
+Direct client-side SDK reads and writes are denied by default:
+
+```javascript
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
 }
 ```
 
-- **Deterministic Digesting**: Recursively sorts JSON keys before computing SHA-256 digests.
-- **Replay Verification**: Offline replay recomputes each evidence record digest directly against the stored payload, verifying that `declared_digest === recomputed_digest`.
-- **Session Manifest Hash**: Calculates session-wide integrity hash to detect added, removed, or modified evidence records.
-- **Standalone Export Bundles**: Downloadable `.rea-bundle.json` files can be replayed entirely offline without initiating any network connections.
+---
+
+## Environment Configuration
+
+Copy `.env.example` to `.env` and configure your settings:
+
+```env
+# Client-side settings (exposed to Vite)
+VITE_FIREBASE_API_KEY="AIzaSy..."
+VITE_FIREBASE_AUTH_DOMAIN="ai-studio-applet-webapp-8d0c9.firebaseapp.com"
+VITE_FIREBASE_PROJECT_ID="ai-studio-applet-webapp-8d0c9"
+VITE_FIREBASE_APP_ID="1:176038363707:web:0ccccd2358c0c9db8ed21e"
+
+# Server-side Firebase Admin & Persistence settings
+FIREBASE_PROJECT_ID="ai-studio-applet-webapp-8d0c9"
+FIREBASE_DATABASE_ID="ai-studio-reastudio-63bdf93b-3367-40fd-8f0f-585fd2c4f1c6"
+FIREBASE_STORAGE_BACKEND="firestore" # "firestore" for production; "sqlite" for local dev/testing
+FIREBASE_ADMIN_UIDS="operator-uid-1,operator-uid-2"
+```
+
+### Initial Setup in Firebase Console
+
+1. **Authentication**: Enable **Email/Password** provider in Firebase Console under Authentication → Sign-in method.
+2. **Users**: Create your initial administrator user under Authentication → Users.
+3. **Allowlist**: Copy the created User UID and add it to `FIREBASE_ADMIN_UIDS` in your server environment.
+4. **Firestore**: The database `ai-studio-reastudio-63bdf93b-3367-40fd-8f0f-585fd2c4f1c6` has been provisioned in region `asia-southeast1`.
 
 ---
 
-## Getting Started
-
-### Prerequisites
-
-- Node.js 22+
-- Bun 1.2+ (Recommended package manager)
+## Development & Testing
 
 ### Installation
 
@@ -131,21 +133,34 @@ export interface EvidenceRecord {
 bun install --frozen-lockfile
 ```
 
-### Development
+### Running Dev Server
 
 ```bash
-bun run dev
+npm run dev
 ```
 
-### Running Tests
+The dev server starts on `http://localhost:3000`.
+
+### Running Automated Test Suite
 
 ```bash
-bun run test
+npm test
 ```
 
-### Static Type Check & Build
+The test suite runs 58 tests across 9 test suites:
+- `auth_and_ownership.test.ts` (Authentication, allowlist, multi-tenant isolation, spoofing protection)
+- `persistence.test.ts` (Atomic session persistence, server restart recovery, bundle generation)
+- `verification.test.ts` (Origin normalization, candidate validation, safe HTTP methods)
+- `artifacts.test.ts` (Path traversal prevention, AST extraction, payload limits)
+- `replay.test.ts` (Cryptographic digest recomputation, manifest verification, tamper detection)
+- `lifecycle.test.ts` (Target capability registry, stage accounting, failure preservation)
+- `golden.test.ts` (End-to-end regression fixtures)
+- `evidence.test.ts` (Evidence canonical digests)
+- `ssrf.test.ts` (IPv4/IPv6 private subnets, cloud metadata, connection pinning)
+
+### Production Build & Lint
 
 ```bash
-bun run lint
-bun run build
+npm run lint
+npm run build
 ```

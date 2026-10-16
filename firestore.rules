@@ -1,0 +1,13 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // REA Studio uses a secure server-authoritative architecture where all
+    // investigation persistence, queries, mutations, and evidence validations
+    // execute exclusively via the authenticated Express API and Firebase Admin SDK.
+    // Direct client-side SDK reads and writes are denied by default to enforce
+    // server-side SSRF guards, ID token verification, and RBAC authorization.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

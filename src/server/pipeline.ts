@@ -30,6 +30,7 @@ import { saveInvestigation } from './persistence';
 
 export interface PipelineOptions {
   identifier: string;
+  owner_uid?: string;
   target_type?: TargetType | string;
   goal?: string;
   evidence_sources?: {
@@ -244,7 +245,7 @@ export async function runInvestigationPipeline(options: PipelineOptions): Promis
         parameters: { timeout_ms: 10000, max_response_bytes: 5242880, user_agent: 'rea-web-engine@6.5.0' }
       }
     };
-    saveInvestigation(failSession);
+    await saveInvestigation(failSession, options.owner_uid || 'system_anonymous');
     throw new Error(`HTTP acquisition failed: ${err.message}`);
   }
 
@@ -635,8 +636,8 @@ export async function runInvestigationPipeline(options: PipelineOptions): Promis
     }
   };
 
-  // Persist session to SQLite repository
-  saveInvestigation(session);
+  // Persist session to repository
+  await saveInvestigation(session, options.owner_uid || 'system_anonymous');
 
   return session;
 }

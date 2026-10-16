@@ -9,19 +9,21 @@ import {
   InvestigationExportBundle 
 } from '../types/investigation';
 import { canonicalJsonStringify, sha256 } from './replay';
+import { FirestoreInvestigationRepository } from './firestoreRepository';
+import { resolveServerConfig } from './firebaseAdmin';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DB_PATH = path.join(DATA_DIR, 'rea_studio.db');
 
 export interface InvestigationRepository {
-  save(session: InvestigationSession): void;
-  getById(id: string): InvestigationSession | null;
-  list(): InvestigationSession[];
-  delete(id: string): boolean;
-  clearCache(): void;
-  getExportBundle(id: string): InvestigationExportBundle | null;
-  importExportBundle(bundle: InvestigationExportBundle): InvestigationSession;
-  close(): void;
+  save(session: InvestigationSession, ownerUid: string): Promise<void>;
+  getById(id: string, requesterUid?: string): Promise<InvestigationSession | null>;
+  list(requesterUid?: string): Promise<InvestigationSession[]>;
+  delete(id: string, requesterUid?: string): Promise<boolean>;
+  clearCache(): Promise<void>;
+  getExportBundle(id: string, requesterUid?: string): Promise<InvestigationExportBundle | null>;
+  importExportBundle(bundle: InvestigationExportBundle, ownerUid: string): Promise<InvestigationSession>;
+  close?(): Promise<void> | void;
 }
 
 export class SqliteInvestigationRepository implements InvestigationRepository {
@@ -58,6 +60,7 @@ export class SqliteInvestigationRepository implements InvestigationRepository {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS investigations (
             investigation_id TEXT PRIMARY KEY,
+            owner_uid TEXT,
             target_type TEXT NOT NULL,
             target_identifier TEXT NOT NULL,
             target_identity_hash TEXT NOT NULL,
@@ -100,11 +103,11 @@ export class SqliteInvestigationRepository implements InvestigationRepository {
           CREATE TABLE IF NOT EXISTS findings (
             finding_id TEXT PRIMARY KEY,
             investigation_id TEXT NOT NULL,
+            claim TEXT NOT NULL,
             category TEXT NOT NULL,
             classification TEXT NOT NULL,
-            status TEXT NOT NULL,
-            claim TEXT NOT NULL,
             confidence REAL NOT NULL,
+            status TEXT NOT NULL,
             method TEXT NOT NULL,
             evidence_ids_json TEXT NOT NULL,
             supports_json TEXT,
@@ -114,88 +117,90 @@ export class SqliteInvestigationRepository implements InvestigationRepository {
 
           CREATE INDEX IF NOT EXISTS idx_evidence_investigation ON evidence_records (investigation_id);
           CREATE INDEX IF NOT EXISTS idx_findings_investigation ON findings (investigation_id);
-
-          INSERT INTO schema_migrations (version, applied_at, description)
-          VALUES (1, datetime('now'), 'Initial schema: investigations, evidence_records, findings');
+          CREATE INDEX IF NOT EXISTS idx_investigations_status ON investigations (status);
         `);
+
+        this.db.prepare('INSERT INTO schema_migrations (version, applied_at, description) VALUES (?, ?, ?)')
+          .run(1, new Date().toISOString(), 'Initial normalized schema');
         this.db.exec('COMMIT');
       } catch (err) {
         this.db.exec('ROLLBACK');
         throw err;
       }
     }
+
+    if (currentVersion < 2) {
+      try {
+        this.db.exec('ALTER TABLE investigations ADD COLUMN owner_uid TEXT;');
+        this.db.prepare('INSERT INTO schema_migrations (version, applied_at, description) VALUES (?, ?, ?)')
+          .run(2, new Date().toISOString(), 'Add owner_uid column for multi-tenant isolation');
+      } catch (err: any) {
+        // column may already exist
+      }
+    }
   }
 
   private preloadCache(): void {
     try {
-      const rows = this.db.prepare('SELECT session_json FROM investigations ORDER BY created_at DESC').all() as any[];
-      this.cache.clear();
+      const rows = this.db.prepare('SELECT session_json FROM investigations').all() as any[];
       for (const row of rows) {
         if (row.session_json) {
-          try {
-            const session = JSON.parse(row.session_json) as InvestigationSession;
-            if (session && session.investigation_id) {
-              this.cache.set(session.investigation_id, session);
-            }
-          } catch (e) {
-            console.error('Failed to parse cached session:', e);
-          }
+          const session = JSON.parse(row.session_json) as InvestigationSession;
+          this.cache.set(session.investigation_id, session);
         }
       }
-    } catch (err) {
-      console.error('Error preloading cache from SQLite:', err);
+    } catch {
+      // ignore
     }
   }
 
-  public save(session: InvestigationSession): void {
-    if (!session || !session.investigation_id) {
-      throw new Error('Valid investigation session with investigation_id is required.');
-    }
-
-    this.cache.set(session.investigation_id, session);
-
-    const serializedSession = JSON.stringify(session);
-    const stagesExecuted = session.coverage?.stages_executed || 0;
-    const stagesTotal = session.coverage?.stages_total || 0;
-    const stagesSkipped = session.coverage?.stages_skipped || 0;
-    const stagesFailed = session.coverage?.stages_failed || 0;
+  async save(session: InvestigationSession, ownerUid: string): Promise<void> {
+    session.owner_uid = ownerUid;
+    this.cache.set(session.investigation_id, JSON.parse(JSON.stringify(session)));
 
     this.db.exec('BEGIN');
     try {
-      // Upsert investigation
       const upsertInv = this.db.prepare(`
         INSERT INTO investigations (
-          investigation_id, target_type, target_identifier, target_identity_hash,
+          investigation_id, owner_uid, target_type, target_identifier, target_identity_hash,
           status, goal, stages_executed, stages_total, stages_skipped, stages_failed,
           created_at, completed_at, manifest_json, graph_json, unknowns_json,
           timeline_json, toolchain_json, coverage_json, session_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(investigation_id) DO UPDATE SET
+          owner_uid = excluded.owner_uid,
+          target_type = excluded.target_type,
+          target_identifier = excluded.target_identifier,
+          target_identity_hash = excluded.target_identity_hash,
           status = excluded.status,
+          goal = excluded.goal,
           stages_executed = excluded.stages_executed,
           stages_total = excluded.stages_total,
           stages_skipped = excluded.stages_skipped,
           stages_failed = excluded.stages_failed,
+          created_at = excluded.created_at,
           completed_at = excluded.completed_at,
           manifest_json = excluded.manifest_json,
           graph_json = excluded.graph_json,
           unknowns_json = excluded.unknowns_json,
           timeline_json = excluded.timeline_json,
+          toolchain_json = excluded.toolchain_json,
           coverage_json = excluded.coverage_json,
           session_json = excluded.session_json
       `);
 
       upsertInv.run(
         session.investigation_id,
+        ownerUid,
         session.target.type,
         session.target.identifier,
         session.target.identity_hash,
         session.status,
         session.goal,
-        stagesExecuted,
-        stagesTotal,
-        stagesSkipped,
-        stagesFailed,
+        session.coverage.stages_executed,
+        session.coverage.stages_total,
+        session.coverage.stages_skipped || 0,
+        session.coverage.stages_failed || 0,
         session.manifest.created_at,
         session.manifest.completed_at || null,
         JSON.stringify(session.manifest),
@@ -204,11 +209,13 @@ export class SqliteInvestigationRepository implements InvestigationRepository {
         JSON.stringify(session.timeline),
         JSON.stringify(session.toolchain),
         JSON.stringify(session.coverage),
-        serializedSession
+        JSON.stringify(session)
       );
 
-      // Refresh evidence records
+      // Replace child records atomically
       this.db.prepare('DELETE FROM evidence_records WHERE investigation_id = ?').run(session.investigation_id);
+      this.db.prepare('DELETE FROM findings WHERE investigation_id = ?').run(session.investigation_id);
+
       const insertEvidence = this.db.prepare(`
         INSERT INTO evidence_records (
           evidence_id, investigation_id, schema_version, type, phase, authority,
@@ -221,44 +228,42 @@ export class SqliteInvestigationRepository implements InvestigationRepository {
         insertEvidence.run(
           ev.evidence_id,
           session.investigation_id,
-          ev.schema_version || '1.0.0',
+          ev.schema_version,
           ev.type,
           ev.phase,
           ev.authority,
           ev.source.kind,
           ev.source.location,
           ev.source.sha256,
-          ev.canonical_digest || ev.source.sha256,
+          ev.canonical_digest,
           JSON.stringify(ev.content),
           JSON.stringify(ev.limitations || []),
           ev.timestamp,
           ev.tool,
-          JSON.stringify(ev.parent_evidence_ids || [])
+          ev.parent_evidence_ids ? JSON.stringify(ev.parent_evidence_ids) : null
         );
       }
 
-      // Refresh findings
-      this.db.prepare('DELETE FROM findings WHERE investigation_id = ?').run(session.investigation_id);
       const insertFinding = this.db.prepare(`
         INSERT INTO findings (
-          finding_id, investigation_id, category, classification, status,
-          claim, confidence, method, evidence_ids_json, supports_json, details_json
+          finding_id, investigation_id, claim, category, classification,
+          confidence, status, method, evidence_ids_json, supports_json, details_json
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
-      for (const fd of session.findings || []) {
+      for (const f of session.findings || []) {
         insertFinding.run(
-          fd.finding_id,
+          f.finding_id,
           session.investigation_id,
-          fd.category,
-          fd.classification,
-          fd.status,
-          fd.claim,
-          fd.confidence,
-          fd.method,
-          JSON.stringify(fd.evidence_ids || []),
-          JSON.stringify(fd.supports || []),
-          JSON.stringify(fd.details || {})
+          f.claim,
+          f.category,
+          f.classification,
+          f.confidence,
+          f.status,
+          f.method,
+          JSON.stringify(f.evidence_ids || []),
+          f.supports ? JSON.stringify(f.supports) : null,
+          f.details ? JSON.stringify(f.details) : null
         );
       }
 
@@ -269,52 +274,75 @@ export class SqliteInvestigationRepository implements InvestigationRepository {
     }
   }
 
-  public getById(id: string): InvestigationSession | null {
+  async getById(id: string, requesterUid?: string): Promise<InvestigationSession | null> {
     if (this.cache.has(id)) {
-      return this.cache.get(id)!;
-    }
-
-    const row = this.db.prepare('SELECT session_json FROM investigations WHERE investigation_id = ?').get(id) as any;
-    if (row && row.session_json) {
-      try {
-        const session = JSON.parse(row.session_json) as InvestigationSession;
-        this.cache.set(id, session);
-        return session;
-      } catch {
+      const session = this.cache.get(id)!;
+      if (requesterUid && session.owner_uid && session.owner_uid !== requesterUid) {
         return null;
       }
+      return JSON.parse(JSON.stringify(session));
     }
 
-    return null;
+    const row = this.db.prepare('SELECT session_json, owner_uid FROM investigations WHERE investigation_id = ?').get(id) as any;
+    if (!row || !row.session_json) {
+      return null;
+    }
+
+    if (requesterUid && row.owner_uid && row.owner_uid !== requesterUid) {
+      return null;
+    }
+
+    const session = JSON.parse(row.session_json) as InvestigationSession;
+    if (row.owner_uid) session.owner_uid = row.owner_uid;
+    this.cache.set(session.investigation_id, session);
+    return session;
   }
 
-  public list(): InvestigationSession[] {
-    const rows = this.db.prepare('SELECT session_json FROM investigations ORDER BY created_at DESC').all() as any[];
-    const list: InvestigationSession[] = [];
+  async list(requesterUid?: string): Promise<InvestigationSession[]> {
+    let rows: any[];
+    if (requesterUid) {
+      rows = this.db.prepare('SELECT session_json, owner_uid FROM investigations WHERE owner_uid = ? ORDER BY created_at DESC').all(requesterUid) as any[];
+    } else {
+      rows = this.db.prepare('SELECT session_json, owner_uid FROM investigations ORDER BY created_at DESC').all() as any[];
+    }
+
+    const sessions: InvestigationSession[] = [];
     for (const row of rows) {
       if (row.session_json) {
-        try {
-          list.push(JSON.parse(row.session_json));
-        } catch {
-          // ignore corrupted row
-        }
+        const s = JSON.parse(row.session_json) as InvestigationSession;
+        if (row.owner_uid) s.owner_uid = row.owner_uid;
+        sessions.push(s);
       }
     }
-    return list;
+    return sessions;
   }
 
-  public delete(id: string): boolean {
+  async delete(id: string, requesterUid?: string): Promise<boolean> {
+    if (requesterUid) {
+      const session = await this.getById(id, requesterUid);
+      if (!session) return false;
+    }
+
     this.cache.delete(id);
-    const res = this.db.prepare('DELETE FROM investigations WHERE investigation_id = ?').run(id);
-    return res.changes > 0;
+    this.db.exec('BEGIN');
+    try {
+      this.db.prepare('DELETE FROM evidence_records WHERE investigation_id = ?').run(id);
+      this.db.prepare('DELETE FROM findings WHERE investigation_id = ?').run(id);
+      this.db.prepare('DELETE FROM investigations WHERE investigation_id = ?').run(id);
+      this.db.exec('COMMIT');
+      return true;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      return false;
+    }
   }
 
-  public clearCache(): void {
+  async clearCache(): Promise<void> {
     this.cache.clear();
   }
 
-  public getExportBundle(id: string): InvestigationExportBundle | null {
-    const session = this.getById(id);
+  async getExportBundle(id: string, requesterUid?: string): Promise<InvestigationExportBundle | null> {
+    const session = await this.getById(id, requesterUid);
     if (!session) return null;
 
     const evidencePayloads: Record<string, Record<string, any>> = {};
@@ -322,12 +350,29 @@ export class SqliteInvestigationRepository implements InvestigationRepository {
       evidencePayloads[ev.evidence_id] = ev.content;
     }
 
-    const reportMarkdown = generateSessionReportMarkdown(session);
-    const bundlePayload = {
-      investigation: session,
-      evidence_payloads: evidencePayloads
+    const reportMarkdown = `# REA Studio Investigation Report
+**Investigation ID:** \`${session.investigation_id}\`  
+**Target:** \`${session.target.identifier}\` (\`${session.target.type}\`)  
+**Status:** \`${session.status}\`  
+**Created At:** \`${session.manifest.created_at}\`  
+**Completed At:** \`${session.manifest.completed_at || 'In-Progress'}\`  
+**Integrity Hash:** \`${session.manifest.integrity_hash || 'Unsealed'}\`
+
+## Summary & Coverage
+- **Stages Executed:** ${session.coverage.stages_executed}/${session.coverage.stages_total}
+- **Endpoints Discovered:** ${session.coverage.endpoints_discovered}
+- **Endpoints Verified:** ${session.coverage.endpoints_verified}
+- **Evidence Count:** ${session.evidence.length}
+- **Findings Count:** ${session.findings.length}
+`;
+
+    const integrity = {
+      evidence_count: session.evidence.length,
+      findings_count: session.findings.length,
+      manifest_hash: session.manifest.integrity_hash || '',
+      bundle_hash: sha256(canonicalJsonStringify(evidencePayloads)),
+      verification_status: 'hash-verified' as const
     };
-    const bundleHash = sha256(canonicalJsonStringify(bundlePayload));
 
     return {
       bundle_version: '1.0.0',
@@ -335,62 +380,61 @@ export class SqliteInvestigationRepository implements InvestigationRepository {
       investigation: session,
       evidence_payloads: evidencePayloads,
       report_markdown: reportMarkdown,
-      integrity: {
-        evidence_count: session.evidence.length,
-        findings_count: session.findings.length,
-        manifest_hash: session.manifest.integrity_hash || '',
-        bundle_hash: bundleHash,
-        verification_status: 'hash-verified'
-      }
+      integrity
     };
   }
 
-  public importExportBundle(bundle: InvestigationExportBundle): InvestigationSession {
-    if (!bundle || bundle.bundle_version !== '1.0.0' || !bundle.investigation) {
-      throw new Error('Invalid export bundle: missing bundle_version "1.0.0" or investigation session.');
+  async importExportBundle(bundle: InvestigationExportBundle, ownerUid: string): Promise<InvestigationSession> {
+    if (!bundle || bundle.bundle_version !== '1.0.0') {
+      throw new Error(`Unsupported bundle format or version. Expected 1.0.0.`);
     }
 
     const session = bundle.investigation;
-    this.save(session);
+    if (!session || !session.investigation_id || !session.manifest) {
+      throw new Error('Invalid bundle: Missing investigation session or manifest.');
+    }
+
+    for (const ev of session.evidence || []) {
+      const computedDigest = sha256(canonicalJsonStringify(ev.content));
+      if (computedDigest !== ev.canonical_digest) {
+        throw new Error(`Tampered bundle: Evidence "${ev.evidence_id}" payload hash mismatch.`);
+      }
+    }
+
+    session.owner_uid = ownerUid;
+    await this.save(session, ownerUid);
     return session;
   }
 
-  public close(): void {
-    this.db.close();
+  close(): void {
+    try {
+      this.db.close();
+    } catch {}
   }
 }
 
-function generateSessionReportMarkdown(session: InvestigationSession): string {
-  return `# REA Investigation Report: ${session.investigation_id}
-
-**Target**: \`${session.target.identifier}\` (\`${session.target.type}\`)  
-**Target Identity SHA-256**: \`${session.target.identity_hash}\`  
-**Status**: \`${session.status}\`  
-**Created At**: ${session.manifest.created_at}  
-**Integrity Hash**: \`${session.manifest.integrity_hash || 'unsealed'}\`  
-
----
-
-## Findings Summary
-${session.findings.map(f => `- **[${f.status}]** (${f.classification.toUpperCase()} ${(f.confidence * 100).toFixed(0)}%) ${f.claim} (Evidence: ${f.evidence_ids.join(', ')})`).join('\n')}
-
----
-
-## Evidence Ledger (${session.evidence.length} records)
-${session.evidence.map(e => `- \`${e.evidence_id}\` [${e.phase}] SHA-256: \`${e.source.sha256}\` (${e.authority})`).join('\n')}
-`;
-}
-
-// Global default singleton instance
-let repositoryInstance: InvestigationRepository | null = null;
+let activeRepository: InvestigationRepository | null = null;
 
 export function getRepository(): InvestigationRepository {
-  if (!repositoryInstance) {
-    repositoryInstance = new SqliteInvestigationRepository();
+  if (!activeRepository) {
+    const { storageBackend } = resolveServerConfig();
+
+    if (storageBackend === 'sqlite') {
+      activeRepository = new SqliteInvestigationRepository();
+    } else {
+      try {
+        activeRepository = new FirestoreInvestigationRepository();
+      } catch (err: any) {
+        // Enforce Phase 5 constraint: Do not silently fall back to SQLite when Firestore is configured!
+        throw new Error(
+          `Cloud Firestore storage backend is configured (FIREBASE_STORAGE_BACKEND=firestore) but failed to initialize: ${err.message}. Failing fast to prevent silent fallback to SQLite.`
+        );
+      }
+    }
   }
-  return repositoryInstance;
+  return activeRepository;
 }
 
-export function setRepository(repo: InvestigationRepository): void {
-  repositoryInstance = repo;
+export function setCustomRepository(repo: InvestigationRepository | null): void {
+  activeRepository = repo;
 }

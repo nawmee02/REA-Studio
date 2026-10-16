@@ -201,6 +201,7 @@ export interface GraphEdge {
 
 export interface InvestigationSession {
   investigation_id: string;
+  owner_uid?: string;
   goal: string;
   target: Target;
   toolchain: {

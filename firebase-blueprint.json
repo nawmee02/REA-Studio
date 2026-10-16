@@ -1,0 +1,88 @@
+{
+  "entities": {
+    "Investigation": {
+      "title": "Investigation",
+      "description": "Top-level metadata and lifecycle state for a reverse-engineering investigation session",
+      "type": "object",
+      "properties": {
+        "investigation_id": { "type": "string", "maxLength": 128 },
+        "owner_uid": { "type": "string", "maxLength": 128 },
+        "goal": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "maxLength": 32 },
+        "target": { "type": "object" },
+        "toolchain": { "type": "object" },
+        "evidence_sources": { "type": "object" },
+        "unknowns": { "type": "array" },
+        "coverage": { "type": "object" },
+        "timeline": { "type": "array" },
+        "manifest": { "type": "object" },
+        "created_at": { "type": "string", "maxLength": 64 },
+        "completed_at": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["investigation_id", "owner_uid", "goal", "status"]
+    },
+    "Evidence": {
+      "title": "Evidence",
+      "description": "A single cryptographic evidence record captured during an investigation",
+      "type": "object",
+      "properties": {
+        "evidence_id": { "type": "string", "maxLength": 128 },
+        "schema_version": { "type": "string", "maxLength": 16 },
+        "type": { "type": "string", "maxLength": 32 },
+        "phase": { "type": "string", "maxLength": 64 },
+        "source": { "type": "object" },
+        "content": { "type": "object" },
+        "canonical_digest": { "type": "string", "maxLength": 128 },
+        "authority": { "type": "string", "maxLength": 32 },
+        "timestamp": { "type": "string", "maxLength": 64 },
+        "tool": { "type": "string", "maxLength": 64 },
+        "limitations": { "type": "array" }
+      },
+      "required": ["evidence_id", "canonical_digest", "type", "timestamp"]
+    },
+    "Finding": {
+      "title": "Finding",
+      "description": "Observation or inference claiming an architecture, technology, or endpoint insight",
+      "type": "object",
+      "properties": {
+        "finding_id": { "type": "string", "maxLength": 128 },
+        "claim": { "type": "string", "maxLength": 500 },
+        "category": { "type": "string", "maxLength": 64 },
+        "classification": { "type": "string", "maxLength": 32 },
+        "confidence": { "type": "number" },
+        "status": { "type": "string", "maxLength": 32 },
+        "evidence_ids": { "type": "array" },
+        "method": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["finding_id", "claim", "category", "status"]
+    },
+    "Graph": {
+      "title": "Graph",
+      "description": "Knowledge and provenance graph nodes and edges for the investigation",
+      "type": "object",
+      "properties": {
+        "nodes": { "type": "array" },
+        "edges": { "type": "array" }
+      },
+      "required": ["nodes", "edges"]
+    }
+  },
+  "firestore": {
+    "/investigations/{investigationId}": {
+      "schema": "Investigation",
+      "description": "Top-level metadata and lifecycle of an investigation owned by a specific user"
+    },
+    "/investigations/{investigationId}/evidence/{evidenceId}": {
+      "schema": "Evidence",
+      "description": "Normalized subcollection of evidence records"
+    },
+    "/investigations/{investigationId}/findings/{findingId}": {
+      "schema": "Finding",
+      "description": "Normalized subcollection of findings"
+    },
+    "/investigations/{investigationId}/graph/{graphId}": {
+      "schema": "Graph",
+      "description": "Graph subcollection storing investigation knowledge graph"
+    }
+  }
+}

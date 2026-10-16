@@ -15,6 +15,8 @@ describe('Cryptographic Replay & Tamper Detection', () => {
   let baseUrl: string;
 
   before(async () => {
+    process.env.NODE_ENV = 'test';
+    process.env.FIREBASE_STORAGE_BACKEND = 'sqlite';
     const app = createInvestigationApp();
     server = http.createServer(app);
     await new Promise<void>((resolve) => {
@@ -227,10 +229,14 @@ describe('Cryptographic Replay & Tamper Detection', () => {
 
   test('POST /api/replay-investigation endpoint verifies session via API', async () => {
     const cleanSession = createSampleSession();
+    const testAuthHeaders = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer test-token:test-operator-1'
+    };
 
     const cleanRes = await fetch(`${baseUrl}/api/replay-investigation`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: testAuthHeaders,
       body: JSON.stringify({
         session: cleanSession,
         mode: 'offline_ledger'
@@ -248,7 +254,7 @@ describe('Cryptographic Replay & Tamper Detection', () => {
 
     const tamperedRes = await fetch(`${baseUrl}/api/replay-investigation`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: testAuthHeaders,
       body: JSON.stringify({
         session: tamperedSession,
         mode: 'offline_ledger'
@@ -264,6 +270,10 @@ describe('Cryptographic Replay & Tamper Detection', () => {
 
   test('replays standalone export bundle offline without network calls', async () => {
     const session = createSampleSession();
+    const testAuthHeaders = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer test-token:test-operator-1'
+    };
     const bundle = {
       bundle_version: '1.0.0',
       exported_at: new Date().toISOString(),
@@ -283,7 +293,7 @@ describe('Cryptographic Replay & Tamper Detection', () => {
 
     const res = await fetch(`${baseUrl}/api/replay-investigation`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: testAuthHeaders,
       body: JSON.stringify({
         bundle,
         mode: 'offline_bundle'
@@ -305,7 +315,10 @@ describe('Cryptographic Replay & Tamper Detection', () => {
 
     const res = await fetch(`${baseUrl}/api/replay-investigation`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer test-token:test-operator-1'
+      },
       body: JSON.stringify({
         bundle: corruptedBundle,
         mode: 'offline_bundle'

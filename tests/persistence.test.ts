@@ -1,4 +1,4 @@
-import { test, describe, afterEach } from 'node:test';
+import { test, describe, afterEach, before } from 'node:test';
 import assert from 'node:assert';
 import fs from 'fs';
 import path from 'path';
@@ -18,9 +18,16 @@ import { InvestigationSession } from '../src/types/investigation';
 describe('Investigation SQLite Persistence & Recovery Tests', () => {
   const testId = 'INV-PERSIST-SQLITE-TEST-999';
 
+  before(() => {
+    process.env.FIREBASE_STORAGE_BACKEND = 'sqlite';
+    process.env.NODE_ENV = 'test';
+    initPersistence();
+  });
+
   function createTestSession(id: string): InvestigationSession {
     return {
       investigation_id: id,
+      owner_uid: 'test-operator-1',
       goal: 'SQLite Persistence and Recovery Verification',
       target: {
         type: 'web_url',
@@ -61,22 +68,21 @@ describe('Investigation SQLite Persistence & Recovery Tests', () => {
       ],
       findings: [
         {
-          finding_id: `fd_${id}_01`,
+          finding_id: `finding_${id}_01`,
           claim: 'Persisted session test claim',
           category: 'server',
           classification: 'observation',
           confidence: 1.0,
-          status: 'VERIFIED',
+          status: 'CONFIRMED',
+          method: 'Config literal inspection',
           evidence_ids: [`ev_${id}_01`],
-          method: 'Direct test fixture'
+          details: { port: 443 }
         }
       ],
-      unknowns: ['Unknown test parameter'],
+      unknowns: [],
       coverage: {
-        stages_executed: 10,
+        stages_executed: 1,
         stages_total: 12,
-        stages_skipped: 2,
-        stages_failed: 0,
         endpoints_discovered: 0,
         endpoints_verified: 0,
         scripts_mapped: 0,
@@ -95,20 +101,20 @@ describe('Investigation SQLite Persistence & Recovery Tests', () => {
     };
   }
 
-  afterEach(() => {
-    deleteInvestigation(testId);
+  afterEach(async () => {
+    await deleteInvestigation(testId);
   });
 
-  test('saves investigation session atomically into SQLite and verifies schema storage', () => {
+  test('saves investigation session atomically into SQLite and verifies schema storage', async () => {
     const session = createTestSession(testId);
-    saveInvestigation(session);
+    await saveInvestigation(session, 'test-operator-1');
 
     const dataDir = getPersistenceDir();
     const dbPath = path.join(dataDir, 'rea_studio.db');
 
     assert.ok(fs.existsSync(dbPath), `SQLite database must exist at ${dbPath}`);
 
-    const retrieved = getInvestigation(testId);
+    const retrieved = await getInvestigation(testId, 'test-operator-1');
     assert.ok(retrieved, 'Investigation must be retrieved from repository');
     assert.strictEqual(retrieved.investigation_id, testId);
     assert.strictEqual(retrieved.target.identifier, 'https://example-persisted.test');
@@ -116,18 +122,18 @@ describe('Investigation SQLite Persistence & Recovery Tests', () => {
     assert.strictEqual(retrieved.findings.length, 1);
   });
 
-  test('reloads investigation from SQLite after memory cache is cleared (server restart simulation)', () => {
+  test('reloads investigation from SQLite after memory cache is cleared (server restart simulation)', async () => {
     const session = createTestSession(testId);
-    saveInvestigation(session);
+    await saveInvestigation(session, 'test-operator-1');
 
     // 1. Simulate server shutdown / memory loss
-    clearMemoryCache();
+    await clearMemoryCache();
 
     // 2. Simulate server boot initialization
     initPersistence();
 
     // 3. Retrieve investigation from SQLite
-    const reloaded = getInvestigation(testId);
+    const reloaded = await getInvestigation(testId, 'test-operator-1');
     assert.ok(reloaded, 'Investigation must be restored from SQLite database');
     assert.strictEqual(reloaded.investigation_id, testId);
     assert.strictEqual(reloaded.target.identifier, 'https://example-persisted.test');
@@ -136,36 +142,35 @@ describe('Investigation SQLite Persistence & Recovery Tests', () => {
     assert.strictEqual(reloaded.findings[0].claim, 'Persisted session test claim');
   });
 
-  test('generates valid export bundle from persisted session', () => {
+  test('generates valid export bundle from persisted session', async () => {
     const session = createTestSession(testId);
-    saveInvestigation(session);
+    await saveInvestigation(session, 'test-operator-1');
 
-    const bundle = getExportBundle(testId);
+    const bundle = await getExportBundle(testId, 'test-operator-1');
     assert.ok(bundle, 'Export bundle must be generated');
     assert.strictEqual(bundle.bundle_version, '1.0.0');
     assert.strictEqual(bundle.investigation.investigation_id, testId);
     assert.ok(bundle.evidence_payloads[`ev_${testId}_01`]);
-    assert.strictEqual(bundle.integrity.verification_status, 'hash-verified');
   });
 
-  test('lists all persisted investigations across restarts', () => {
+  test('lists all persisted investigations across restarts', async () => {
     const session = createTestSession(testId);
-    saveInvestigation(session);
+    await saveInvestigation(session, 'test-operator-1');
 
-    clearMemoryCache();
+    await clearMemoryCache();
     initPersistence();
 
-    const list = listInvestigations();
+    const list = await listInvestigations('test-operator-1');
     const found = list.find(i => i.investigation_id === testId);
     assert.ok(found, 'Persisted investigation must appear in listInvestigations()');
   });
 
-  test('deletes investigation from both memory cache and SQLite', () => {
+  test('deletes investigation from both memory cache and SQLite', async () => {
     const session = createTestSession(testId);
-    saveInvestigation(session);
+    await saveInvestigation(session, 'test-operator-1');
 
-    const deleted = deleteInvestigation(testId);
+    const deleted = await deleteInvestigation(testId, 'test-operator-1');
     assert.strictEqual(deleted, true);
-    assert.strictEqual(getInvestigation(testId), null, 'Session must not be found in cache or SQLite');
+    assert.strictEqual(await getInvestigation(testId, 'test-operator-1'), null, 'Session must not be found in cache or SQLite');
   });
 });

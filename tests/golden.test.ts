@@ -1,4 +1,4 @@
-import { test, describe } from 'node:test';
+import { test, describe, before } from 'node:test';
 import assert from 'node:assert';
 import fs from 'fs';
 import path from 'path';
@@ -9,6 +9,11 @@ import { deleteInvestigation } from '../src/server/persistence';
 describe('Golden Pipeline Regression Tests', () => {
   const fixturesPath = path.resolve(process.cwd(), 'tests/fixtures/fixtures.json');
   const fixturesData = JSON.parse(fs.readFileSync(fixturesPath, 'utf8'));
+
+  before(() => {
+    process.env.NODE_ENV = 'test';
+    process.env.FIREBASE_STORAGE_BACKEND = 'sqlite';
+  });
 
   test('runs React SPA fixture through the full investigation pipeline', async () => {
     const fixture = fixturesData.fixtures.find((f: any) => f.name === 'react_spa_golden');

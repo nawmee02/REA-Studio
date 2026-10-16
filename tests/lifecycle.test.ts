@@ -9,8 +9,15 @@ import { TARGET_REGISTRY, SUPPORTED_TARGET_TYPES } from '../src/types/investigat
 describe('Investigation Lifecycle & Stage Accounting Tests', () => {
   let server: http.Server;
   let baseUrl: string;
+  const testAuthHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer test-token:test-operator-1'
+  };
 
   before(async () => {
+    process.env.FIREBASE_STORAGE_BACKEND = 'sqlite';
+    process.env.NODE_ENV = 'test';
+
     const app = createInvestigationApp();
     server = http.createServer(app);
     await new Promise<void>((resolve) => {
@@ -44,7 +51,7 @@ describe('Investigation Lifecycle & Stage Accounting Tests', () => {
     for (const target_type of disabledTypes) {
       const res = await fetch(`${baseUrl}/api/investigations`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: testAuthHeaders,
         body: JSON.stringify({
           target_type,
           identifier: 'some_identifier',
@@ -61,9 +68,9 @@ describe('Investigation Lifecycle & Stage Accounting Tests', () => {
 
   test('concurrent investigations receive globally unique collision-resistant IDs', async () => {
     const createdSessions = await Promise.all([
-      runInvestigationPipeline({ identifier: 'https://example.com/one', fixtureHtml: '<html>one</html>' }),
-      runInvestigationPipeline({ identifier: 'https://example.com/two', fixtureHtml: '<html>two</html>' }),
-      runInvestigationPipeline({ identifier: 'https://example.com/three', fixtureHtml: '<html>three</html>' })
+      runInvestigationPipeline({ identifier: 'https://example.com/one', fixtureHtml: '<html>one</html>', owner_uid: 'test-operator-1' }),
+      runInvestigationPipeline({ identifier: 'https://example.com/two', fixtureHtml: '<html>two</html>', owner_uid: 'test-operator-1' }),
+      runInvestigationPipeline({ identifier: 'https://example.com/three', fixtureHtml: '<html>three</html>', owner_uid: 'test-operator-1' })
     ]);
 
     const ids = createdSessions.map(s => s.investigation_id);
@@ -72,14 +79,15 @@ describe('Investigation Lifecycle & Stage Accounting Tests', () => {
 
     for (const id of ids) {
       assert.match(id, /^INV-202[0-9]-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
-      deleteInvestigation(id);
+      await deleteInvestigation(id, 'test-operator-1');
     }
   });
 
   test('reports exact pipeline stage outcomes, accounting, and reasons', async () => {
     const session = await runInvestigationPipeline({
       identifier: 'https://example.com/coverage-test',
-      fixtureHtml: '<!doctype html><html><head><title>App</title></head><body><div id="root" data-reactroot=""></div><script src="/app.js"></script></body></html>'
+      fixtureHtml: '<!doctype html><html><head><title>App</title></head><body><div id="root" data-reactroot=""></div><script src="/app.js"></script></body></html>',
+      owner_uid: 'test-operator-1'
     });
 
     assert.strictEqual(session.status, 'COMPLETED');
@@ -98,17 +106,16 @@ describe('Investigation Lifecycle & Stage Accounting Tests', () => {
     const diffStage = skippedStages.find(s => s.stage === 'differential_version_comparison');
     assert.ok(diffStage && diffStage.reason?.includes('Differential version comparison not supported in Phase 3'));
 
-    deleteInvestigation(session.investigation_id);
+    await deleteInvestigation(session.investigation_id, 'test-operator-1');
   });
 
   test('preserves failed investigation status and failure evidence on acquisition failure', async () => {
-    // Port 1 on 127.0.0.1 or restricted IP triggers SSRF / network failure early
     let threw = false;
-    let failedSessionId = '';
 
     try {
       await runInvestigationPipeline({
-        identifier: 'https://non-existent-domain-for-failure-test-xyz123.test'
+        identifier: 'https://non-existent-domain-for-failure-test-xyz123.test',
+        owner_uid: 'test-operator-1'
       });
     } catch (err: any) {
       threw = true;

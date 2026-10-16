@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { apiFetch } from '../firebase/apiClient';
 import { FileCode, Play, Copy, Check, Terminal, Layers, Hash, Code2, Sparkles, Folder } from 'lucide-react';
 
 export const ArtifactLab: React.FC = () => {
@@ -29,16 +30,14 @@ export default function renderDashboard() {
     setLoading(true);
 
     try {
-      const res = await fetch('/api/analyze-artifact', {
+      const data = await apiFetch('/api/analyze-artifact', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           code: codeContent,
           filename
         })
       });
 
-      const data = await res.json();
       setAnalysisResult(data);
     } catch (err) {
       console.error(err);

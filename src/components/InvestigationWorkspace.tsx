@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { apiFetch } from '../firebase/apiClient';
 import { 
   TargetType, 
   InvestigationSession, 
@@ -64,9 +65,8 @@ export const InvestigationWorkspace: React.FC = () => {
     setError(null);
 
     try {
-      const res = await fetch('/api/investigations', {
+      const session = await apiFetch<InvestigationSession>('/api/investigations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           target_type: targetType,
           identifier: identifier.trim(),
@@ -75,12 +75,6 @@ export const InvestigationWorkspace: React.FC = () => {
         })
       });
 
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson.error || `HTTP ${res.status}: Investigation pipeline failed.`);
-      }
-
-      const session: InvestigationSession = await res.json();
       setActiveSession(session);
       setActiveSubTab('findings');
     } catch (err: any) {
@@ -96,9 +90,8 @@ export const InvestigationWorkspace: React.FC = () => {
     setVerifyingEp(endpointPath);
 
     try {
-      const res = await fetch('/api/verify-endpoint', {
+      const data = await apiFetch('/api/verify-endpoint', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           investigation_id: activeSession.investigation_id,
           endpoint_path: endpointPath,
@@ -106,12 +99,7 @@ export const InvestigationWorkspace: React.FC = () => {
         })
       });
 
-      if (!res.ok) {
-        throw new Error('Verification probe failed.');
-      }
-
-      const data = await res.json();
-      if (data.success && data.updated_finding) {
+      if (data && data.success && data.updated_finding) {
         // Update local session findings and evidence
         setActiveSession({
           ...activeSession,

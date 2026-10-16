@@ -5,36 +5,36 @@ import { getRepository, SqliteInvestigationRepository } from './repository';
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 
 export function initPersistence(): void {
-  // Accessing repository ensures SQLite DB and tables are initialized and cached
+  // Accessing repository ensures initialization
   getRepository();
 }
 
-export function saveInvestigation(session: InvestigationSession): void {
-  getRepository().save(session);
+export async function saveInvestigation(session: InvestigationSession, ownerUid: string = 'system_operator'): Promise<void> {
+  await getRepository().save(session, ownerUid);
 }
 
-export function getInvestigation(id: string): InvestigationSession | null {
-  return getRepository().getById(id);
+export async function getInvestigation(id: string, requesterUid?: string): Promise<InvestigationSession | null> {
+  return await getRepository().getById(id, requesterUid);
 }
 
-export function listInvestigations(): InvestigationSession[] {
-  return getRepository().list();
+export async function listInvestigations(requesterUid?: string): Promise<InvestigationSession[]> {
+  return await getRepository().list(requesterUid);
 }
 
-export function deleteInvestigation(id: string): boolean {
-  return getRepository().delete(id);
+export async function deleteInvestigation(id: string, requesterUid?: string): Promise<boolean> {
+  return await getRepository().delete(id, requesterUid);
 }
 
-export function clearMemoryCache(): void {
-  getRepository().clearCache();
+export async function clearMemoryCache(): Promise<void> {
+  await getRepository().clearCache();
 }
 
-export function getExportBundle(id: string): InvestigationExportBundle | null {
-  return getRepository().getExportBundle(id);
+export async function getExportBundle(id: string, requesterUid?: string): Promise<InvestigationExportBundle | null> {
+  return await getRepository().getExportBundle(id, requesterUid);
 }
 
-export function importExportBundle(bundle: InvestigationExportBundle): InvestigationSession {
-  return getRepository().importExportBundle(bundle);
+export async function importExportBundle(bundle: InvestigationExportBundle, ownerUid: string): Promise<InvestigationSession> {
+  return await getRepository().importExportBundle(bundle, ownerUid);
 }
 
 export function getPersistenceDir(): string {

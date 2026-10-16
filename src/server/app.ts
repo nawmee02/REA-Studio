@@ -27,6 +27,7 @@ import {
 } from './persistence';
 import { replayInvestigationOffline, computeEvidenceContentDigest } from './replay';
 import { runInvestigationPipeline } from './pipeline';
+import { requireAuth } from './authMiddleware';
 
 const SAFE_VERIFICATION_METHODS = ['GET', 'HEAD', 'OPTIONS'];
 
@@ -34,13 +35,23 @@ export function createInvestigationApp(): Express {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
 
-  // Initialize persistence on disk
+  // Initialize persistence engine
   initPersistence();
+
+  // Health check endpoint (unauthenticated)
+  app.get('/api/health', (req, res) => {
+    res.json({
+      status: 'ok',
+      service: 'rea-studio',
+      version: '6.5.0',
+      timestamp: new Date().toISOString()
+    });
+  });
 
   // -------------------------------------------------------------
   // POST /api/investigations — Deterministic Reconnaissance Pipeline
   // -------------------------------------------------------------
-  app.post('/api/investigations', async (req, res) => {
+  app.post('/api/investigations', requireAuth, async (req, res) => {
     try {
       const { 
         target_type = 'web_url', 
@@ -48,6 +59,8 @@ export function createInvestigationApp(): Express {
         goal,
         evidence_sources 
       } = req.body;
+
+      const ownerUid = req.auth!.uid;
 
       // 1. Target Type Validation against registry
       const targetDef = TARGET_REGISTRY[target_type as TargetType];
@@ -72,7 +85,8 @@ export function createInvestigationApp(): Express {
         identifier,
         target_type,
         goal,
-        evidence_sources
+        evidence_sources,
+        owner_uid: ownerUid
       });
 
       return res.json(session);
@@ -85,11 +99,12 @@ export function createInvestigationApp(): Express {
   });
 
   // -------------------------------------------------------------
-  // POST /api/verify-endpoint — Phase 3: Origin-Bound Verification
+  // POST /api/verify-endpoint — Origin-Bound Verification
   // -------------------------------------------------------------
-  app.post('/api/verify-endpoint', async (req, res) => {
+  app.post('/api/verify-endpoint', requireAuth, async (req, res) => {
     try {
       const { investigation_id, endpoint_path, method = 'GET' } = req.body;
+      const ownerUid = req.auth!.uid;
 
       if (!investigation_id || typeof investigation_id !== 'string') {
         return res.status(400).json({ error: 'investigation_id is required.' });
@@ -107,12 +122,13 @@ export function createInvestigationApp(): Express {
         });
       }
 
-      const session = getInvestigation(investigation_id);
+      // 2. Fetch session and check requester ownership
+      const session = await getInvestigation(investigation_id, ownerUid);
       if (!session) {
-        return res.status(404).json({ error: `Investigation "${investigation_id}" not found.` });
+        return res.status(404).json({ error: `Investigation "${investigation_id}" not found or unauthorized.` });
       }
 
-      // 2. Candidate endpoint scope: must match discovered candidate in session
+      // 3. Candidate endpoint scope: must match discovered candidate in session
       const discoveredEndpoints = new Set<string>();
       (session.findings || [])
         .filter(f => f.category === 'endpoint' && f.details?.path)
@@ -140,7 +156,7 @@ export function createInvestigationApp(): Express {
         });
       }
 
-      // 3. Normalized origin comparison (Scheme, Hostname, Effective Port)
+      // 4. Normalized origin comparison (Scheme, Hostname, Effective Port)
       const targetNormalizedOrigin = getNormalizedOrigin(session.target.identifier);
       let targetUrl: string;
 
@@ -157,7 +173,7 @@ export function createInvestigationApp(): Express {
         targetUrl = `${base.origin}${endpoint_path.startsWith('/') ? '' : '/'}${endpoint_path}`;
       }
 
-      // 4. Probe using safeFetch with expectedOrigin to enforce same-origin redirects
+      // 5. Probe using safeFetch with expectedOrigin to enforce same-origin redirects
       let probeRes;
       try {
         probeRes = await safeFetch(targetUrl, {
@@ -199,7 +215,7 @@ export function createInvestigationApp(): Express {
           ]
         };
         session.evidence.push(failEvidence);
-        saveInvestigation(session);
+        await saveInvestigation(session, ownerUid);
 
         return res.json({
           success: false,
@@ -270,8 +286,8 @@ export function createInvestigationApp(): Express {
         }
       }
 
-      // Persist updated session to SQLite
-      saveInvestigation(session);
+      // Persist updated session
+      await saveInvestigation(session, ownerUid);
 
       return res.json({
         success: true,
@@ -287,9 +303,10 @@ export function createInvestigationApp(): Express {
   // -------------------------------------------------------------
   // POST /api/replay-investigation — Cryptographic Replay Engine
   // -------------------------------------------------------------
-  app.post('/api/replay-investigation', async (req, res) => {
+  app.post('/api/replay-investigation', requireAuth, async (req, res) => {
     try {
-      const { investigation_id, session: suppliedSession, bundle, mode = 'offline_ledger' } = req.body;
+      const { investigation_id, session: suppliedSession, bundle } = req.body;
+      const ownerUid = req.auth!.uid;
 
       let session: InvestigationSession | null = null;
       if (bundle) {
@@ -300,11 +317,11 @@ export function createInvestigationApp(): Express {
       } else if (suppliedSession) {
         session = suppliedSession;
       } else if (investigation_id) {
-        session = getInvestigation(investigation_id);
+        session = await getInvestigation(investigation_id, ownerUid);
       }
 
       if (!session) {
-        return res.status(404).json({ error: `Investigation "${investigation_id}" not found.` });
+        return res.status(404).json({ error: `Investigation "${investigation_id}" not found or unauthorized.` });
       }
 
       const report = replayInvestigationOffline(session);
@@ -317,10 +334,11 @@ export function createInvestigationApp(): Express {
   // -------------------------------------------------------------
   // GET /api/investigations/:id/export — Export Versioned Bundle
   // -------------------------------------------------------------
-  app.get('/api/investigations/:id/export', (req, res) => {
-    const bundle = getExportBundle(req.params.id);
+  app.get('/api/investigations/:id/export', requireAuth, async (req, res) => {
+    const ownerUid = req.auth!.uid;
+    const bundle = await getExportBundle(req.params.id, ownerUid);
     if (!bundle) {
-      return res.status(404).json({ error: 'Investigation not found.' });
+      return res.status(404).json({ error: 'Investigation not found or unauthorized.' });
     }
     res.setHeader('Content-Disposition', `attachment; filename="${req.params.id}.rea-bundle.json"`);
     return res.json(bundle);
@@ -329,10 +347,11 @@ export function createInvestigationApp(): Express {
   // -------------------------------------------------------------
   // POST /api/investigations/import — Import Versioned Bundle
   // -------------------------------------------------------------
-  app.post('/api/investigations/import', (req, res) => {
+  app.post('/api/investigations/import', requireAuth, async (req, res) => {
     try {
       const { bundle } = req.body;
-      const session = importExportBundle(bundle);
+      const ownerUid = req.auth!.uid;
+      const session = await importExportBundle(bundle, ownerUid);
       return res.json(session);
     } catch (err: any) {
       return res.status(400).json({ error: err.message });
@@ -340,9 +359,9 @@ export function createInvestigationApp(): Express {
   });
 
   // -------------------------------------------------------------
-  // POST /api/analyze-artifact — Phase 6: Artifact Lab
+  // POST /api/analyze-artifact — Artifact Lab AST/Code Analysis
   // -------------------------------------------------------------
-  app.post('/api/analyze-artifact', async (req, res) => {
+  app.post('/api/analyze-artifact', requireAuth, async (req, res) => {
     try {
       const { code, filename = 'bundle.js', type = 'javascript' } = req.body;
       const result = analyzeArtifactCode(code, filename, type);
@@ -353,27 +372,31 @@ export function createInvestigationApp(): Express {
   });
 
   // -------------------------------------------------------------
-  // GET /api/investigations — List all investigations (from disk/cache)
+  // GET /api/investigations — List all investigations for current operator
   // -------------------------------------------------------------
-  app.get('/api/investigations', (req, res) => {
-    const list = listInvestigations().map(inv => ({
+  app.get('/api/investigations', requireAuth, async (req, res) => {
+    const ownerUid = req.auth!.uid;
+    const list = await listInvestigations(ownerUid);
+    const summaries = list.map(inv => ({
       investigation_id: inv.investigation_id,
+      owner_uid: inv.owner_uid,
       target: inv.target,
       status: inv.status,
       created_at: inv.manifest.created_at,
-      findings_count: inv.findings.length,
-      evidence_count: inv.evidence.length
+      findings_count: inv.findings?.length || 0,
+      evidence_count: inv.evidence?.length || 0
     }));
-    return res.json(list);
+    return res.json(summaries);
   });
 
   // -------------------------------------------------------------
   // GET /api/investigations/:id — Get full investigation session
   // -------------------------------------------------------------
-  app.get('/api/investigations/:id', (req, res) => {
-    const session = getInvestigation(req.params.id);
+  app.get('/api/investigations/:id', requireAuth, async (req, res) => {
+    const ownerUid = req.auth!.uid;
+    const session = await getInvestigation(req.params.id, ownerUid);
     if (!session) {
-      return res.status(404).json({ error: 'Investigation not found.' });
+      return res.status(404).json({ error: 'Investigation not found or unauthorized.' });
     }
     return res.json(session);
   });

@@ -5,14 +5,21 @@ import { createInvestigationApp } from '../src/server/app';
 import { getNormalizedOrigin } from '../src/server/networkGuard';
 import { saveInvestigation, deleteInvestigation } from '../src/server/persistence';
 import { InvestigationSession } from '../src/types/investigation';
-import { computeEvidenceContentDigest, computeSessionIntegrityHash } from '../src/server/replay';
+import { computeEvidenceContentDigest } from '../src/server/replay';
 
 describe('Origin-Bound Endpoint Verification Tests', () => {
   let server: http.Server;
   let baseUrl: string;
   const testSessionId = 'INV-2026-VERIFY-SCOPE-01';
+  const testAuthHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer test-token:test-operator-1'
+  };
 
   before(async () => {
+    process.env.FIREBASE_STORAGE_BACKEND = 'sqlite';
+    process.env.NODE_ENV = 'test';
+
     const app = createInvestigationApp();
     server = http.createServer(app);
     await new Promise<void>((resolve) => {
@@ -37,6 +44,7 @@ describe('Origin-Bound Endpoint Verification Tests', () => {
 
     const session: InvestigationSession = {
       investigation_id: testSessionId,
+      owner_uid: 'test-operator-1',
       goal: 'Endpoint Verification Scope Test',
       target,
       toolchain: { rea_version: '6.5.0', studio_version: '1.0.0', node_version: 'v22' },
@@ -62,30 +70,30 @@ describe('Origin-Bound Endpoint Verification Tests', () => {
           canonical_digest: epDigest,
           authority: 'direct',
           timestamp: new Date().toISOString(),
-          tool: 'rea-endpoint-extractor',
+          tool: 'rea-test',
           limitations: []
         }
       ],
       findings: [
         {
-          finding_id: 'fd_ep_01',
-          claim: 'Discovered candidate endpoint: "/api/v1/health"',
+          finding_id: 'finding_ep_1',
+          claim: 'Endpoint candidate /api/v1/health discovered in code',
           category: 'endpoint',
           classification: 'observation',
           confidence: 0.8,
           status: 'DISCOVERED',
+          method: 'AST inspection',
           evidence_ids: ['ev_ep_disc'],
-          method: 'Static extraction',
-          details: { path: '/api/v1/health', type: 'rest' }
+          details: { path: '/api/v1/health' }
         }
       ],
       unknowns: [],
       coverage: {
-        stages_executed: 10,
+        stages_executed: 2,
         stages_total: 12,
         endpoints_discovered: 1,
         endpoints_verified: 0,
-        scripts_mapped: 0,
+        scripts_mapped: 1,
         technologies_confirmed: 0
       },
       timeline: [],
@@ -96,11 +104,11 @@ describe('Origin-Bound Endpoint Verification Tests', () => {
       }
     };
 
-    saveInvestigation(session);
+    await saveInvestigation(session, 'test-operator-1');
   });
 
   after(async () => {
-    deleteInvestigation(testSessionId);
+    await deleteInvestigation(testSessionId, 'test-operator-1');
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
     });
@@ -125,7 +133,7 @@ describe('Origin-Bound Endpoint Verification Tests', () => {
     for (const method of unpermittedMethods) {
       const res = await fetch(`${baseUrl}/api/verify-endpoint`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: testAuthHeaders,
         body: JSON.stringify({
           investigation_id: testSessionId,
           endpoint_path: '/api/v1/health',
@@ -142,40 +150,40 @@ describe('Origin-Bound Endpoint Verification Tests', () => {
   test('rejects endpoint candidate not discovered in session with 403 Forbidden', async () => {
     const res = await fetch(`${baseUrl}/api/verify-endpoint`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: testAuthHeaders,
       body: JSON.stringify({
         investigation_id: testSessionId,
-        endpoint_path: '/api/v1/unauthorized-ghost-endpoint',
+        endpoint_path: '/admin/unindexed-internal-backdoor',
         method: 'GET'
       })
     });
 
     assert.strictEqual(res.status, 403);
     const body = await res.json() as any;
-    assert.ok(body.error.includes('Scope violation'));
+    assert.ok(body.error && body.error.includes('Scope violation: Endpoint candidate'));
     assert.ok(body.error.includes('was not discovered in investigation'));
   });
 
   test('rejects cross-origin endpoint candidate with 403 Forbidden', async () => {
     const res = await fetch(`${baseUrl}/api/verify-endpoint`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: testAuthHeaders,
       body: JSON.stringify({
         investigation_id: testSessionId,
-        endpoint_path: 'https://evil.attacker.com/api/v1/health',
+        endpoint_path: 'https://attacker.com/api/v1/health',
         method: 'GET'
       })
     });
 
     assert.strictEqual(res.status, 403);
     const body = await res.json() as any;
-    assert.ok(body.error.includes('Scope violation'));
+    assert.ok(body.error && body.error.includes('Scope violation: Verification candidate origin'));
   });
 
   test('rejects alternate scheme (http vs https) with 403 Forbidden', async () => {
     const res = await fetch(`${baseUrl}/api/verify-endpoint`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: testAuthHeaders,
       body: JSON.stringify({
         investigation_id: testSessionId,
         endpoint_path: 'http://example.com/api/v1/health',
@@ -185,13 +193,13 @@ describe('Origin-Bound Endpoint Verification Tests', () => {
 
     assert.strictEqual(res.status, 403);
     const body = await res.json() as any;
-    assert.ok(body.error.includes('Scope violation'));
+    assert.ok(body.error && body.error.includes('Scope violation: Verification candidate origin'));
   });
 
   test('rejects alternate port (e.g. :8443 vs :443) with 403 Forbidden', async () => {
     const res = await fetch(`${baseUrl}/api/verify-endpoint`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: testAuthHeaders,
       body: JSON.stringify({
         investigation_id: testSessionId,
         endpoint_path: 'https://example.com:8443/api/v1/health',
@@ -201,20 +209,22 @@ describe('Origin-Bound Endpoint Verification Tests', () => {
 
     assert.strictEqual(res.status, 403);
     const body = await res.json() as any;
-    assert.ok(body.error.includes('Scope violation'));
+    assert.ok(body.error && body.error.includes('Scope violation: Verification candidate origin'));
   });
 
   test('returns 404 for non-existent investigation ID', async () => {
     const res = await fetch(`${baseUrl}/api/verify-endpoint`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: testAuthHeaders,
       body: JSON.stringify({
-        investigation_id: 'INV-DOES-NOT-EXIST',
+        investigation_id: 'NON-EXISTENT-ID',
         endpoint_path: '/api/v1/health',
         method: 'GET'
       })
     });
 
     assert.strictEqual(res.status, 404);
+    const body = await res.json() as any;
+    assert.ok(body.error.includes('not found or unauthorized'));
   });
 });
